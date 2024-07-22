@@ -11,14 +11,14 @@ The dataset includes the unemployment rate measured monthly. The analysis uses d
 ## Methodology
 
 
-**Data Preprocessing:** Scripts and notebooks for cleaning and preparing the unemployment rate data. 
-**Exploratory Data Analysis (EDA):** Visualizations and statistical analyses to understand the data's underlying patterns.
-**Stationarity Tests:** Implementation of Augmented Dickey-Fuller (ADF), Phillips-Perron (PP), and Kwiatkowski-Phillips-Schmidt-Shin (KPSS) tests to check for stationarity.
-**Model Identification:** Use of Autocorrelation Function (ACF) and Partial Autocorrelation Function (PACF) plots to identify potential SARIMA models.
-**Model Fitting:** Code for fitting various SARIMA models to the data.
-**Model Validation and Diagnostics:** Scripts for validating the models and checking diagnostic plots to ensure adequacy.
-**Forecasting:** Implementation of the best-fit SARIMA model to forecast future unemployment rates.
-**Performance Evaluation:** Evaluation of model performance using metrics such as Mean Error (ME), Root Mean Squared Error (RMSE), Mean Absolute Error (MAE), Mean Percentage Error (MPE), Mean Absolute Percentage Error (MAPE), Mean Absolute Scaled Error (MASE), and Autocorrelation Function of residuals at lag 1 (ACF1).
+* **Data Preprocessing:** Scripts and notebooks for cleaning and preparing the unemployment rate data. 
+* **Exploratory Data Analysis (EDA):** Visualizations and statistical analyses to understand the data's underlying patterns.
+* **Stationarity Tests:** Implementation of Augmented Dickey-Fuller (ADF), Phillips-Perron (PP), and Kwiatkowski-Phillips-Schmidt-Shin (KPSS) tests to check for stationarity.
+* **Model Identification:** Use of Autocorrelation Function (ACF) and Partial Autocorrelation Function (PACF) plots to identify potential SARIMA models.
+* **Model Fitting:** Code for fitting various SARIMA models to the data.
+* **Model Validation and Diagnostics:** Scripts for validating the models and checking diagnostic plots to ensure adequacy.
+* **Forecasting:** Implementation of the best-fit SARIMA model to forecast future unemployment rates.
+* **Performance Evaluation:** Evaluation of model performance using metrics such as Mean Error (ME), Root Mean Squared Error (RMSE), Mean Absolute Error (MAE), Mean Percentage Error (MPE), Mean Absolute Percentage Error (MAPE), Mean Absolute Scaled Error (MASE), and Autocorrelation Function of residuals at lag 1 (ACF1).
 
 ### Models Used
 Several SARIMA models were evaluated, including:
