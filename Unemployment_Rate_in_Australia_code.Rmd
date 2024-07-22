@@ -1,0 +1,952 @@
+---
+title: "Time Series"
+author: "Arvindh"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Required Libraries
+
+library(TSA)
+library(fUnitRoots)
+library(forecast)
+library(lmtest)
+library(tseries)
+library(ggplot2)
+```
+
+
+```{r}
+
+# All custom functions
+
+# Function to sort a data frame based on AIC or BIC values
+
+sort.score <- function(x, score = c("bic", "aic")){
+  if (score == "aic"){
+    x[with(x, order(AIC)),]
+  } else if (score == "bic") {
+    x[with(x, order(BIC)),]
+  } else {
+    warning('score = "x" only accepts valid arguments ("aic","bic")')
+  }
+}
+
+# Function to perform residual analysis and diagnostics for various time series models
+
+residual.analysis <- function(model, std = TRUE, start = 2, class = c("ARIMA", "GARCH", "ARMA-GARCH", "fGARCH")[1]) {
+  library(TSA)
+  if (class == "ARIMA") {
+    if (std == TRUE) {
+      res.model <- rstandard(model)
+    } else {
+      res.model <- residuals(model)
+    }
+  } else if (class == "GARCH") {
+    res.model <- model$residuals[start:model$n.used]
+  } else if (class == "ARMA-GARCH") {
+    res.model <- model@fit$residuals
+  } else if (class == "fGARCH") {
+    res.model <- model@residuals
+  } else {
+    stop("The argument 'class' must be either 'ARIMA' or 'GARCH'")
+  }
+
+  
+  par(mfrow = c(3, 2))
+  plot(res.model, type = 'o', ylab = 'Standardised residuals', main = "Time series plot of standardised residuals")
+  abline(h = 0)
+  hist(res.model, main = "Histogram of standardised residuals")
+  qqnorm(res.model, main = "QQ plot of standardised residuals")
+  qqline(res.model, col = 2)
+  acf(res.model, main = "ACF of standardised residuals")
+  print(shapiro.test(res.model))
+  
+  # Perform Ljung-Box test and calculate p-values for lags 1 to 30
+  p_values <- sapply(1:30, function(lag) Box.test(res.model, lag = lag, type = "Ljung-Box")$p.value)
+  
+  # Plotting without lines extending from the significance level to the points
+  plot(p_values, type = 'h', ylim = c(0, 1), main = "Ljung-Box Test p-values",
+       ylab = "p-value", xlab = "Lag", pch = 19)  # Use pch = 16 for solid circles or pch = 19 for hollow circles
+  
+  # Add a line for the 0.05 significance level without lines extending to points
+  abline(h = 0.05, col = "red", lty = 2, untf = FALSE)  # Setting untf = FALSE prevents lines extending to points
+  
+  par(mfrow = c(1, 1))
+}
+
+# Function to plot ACF and PACF
+plot_acf_pacf <- function(ts_object) {
+  #options(repr.plot.width=8, repr.plot.height=10)
+  par(mfrow=c(2,1))
+  acf(ts_object,lag.max=36, main ="ACF plot")
+  pacf(ts_object, lag.max=36, main ="PACF plot")
+  par(mfrow=c(1,1))
+}
+
+
+# Function to assess normality using QQ plot and Shapiro-Wilk test
+qq_shapiro_function <- function(ts_object) {
+  qqnorm(ts_object)
+  qqline(ts_object, col = 2)
+  shapiro_result <- shapiro.test(ts_object)
+  return(shapiro_result)
+}
+
+
+
+# Function for Stationary Tests ( ADF, PP and KPSS Tests)
+ts_stationary_tests <- function(ts_object) {
+  adf_result <- adf.test(ts_object)
+  pp_result <- pp.test(ts_object)
+  kpss_result <- kpss.test(ts_object)
+  
+  results <- list(ADF_Test = adf_result, PP_Test = pp_result, KPSS_Test = kpss_result)
+  return(results)
+}
+
+
+
+# Function to plot residuals, ACF, and PACF
+
+plot_residuals_acf_pacf<- function(residuals,title) {
+  par(mfrow=c(1,1))
+  plot(residuals,xlab='Time',ylab='Residuals',main=paste("Time series plot of the residuals",title))
+  plot_acf_pacf(residuals)
+}
+
+
+
+```
+
+
+# Introduction
+
+Need to write... Tell what we are going to do 
+
+
+
+# Data 
+
+The data selected for this assignment was sourced from the Australian Bureau of Statistics' Unemployment Rate report [1]. It represents the unemployment rate of people aged 15 to 24 in Australia from November 2002 to November 2011. According to the source, employment in Australia typically increases over the Christmas/New Year period, which may present challenges for perfect modeling. In this report, we will first explore the data in depth and then proceed with appropriate modeling steps.
+
+The data did not have any missing values, and the only pre-processing required was parsing numbers from strings to numeric format, which was done in Excel.
+
+## Data Retrival and Exploration
+
+```{r}
+# Read Data
+
+# Data Retrieval
+unemployment_rate <- read.csv("Unemployment rate of persons aged 15-24 - Original.csv",col.names = c('Date','unemp_rate'))
+head(unemployment_rate)
+```
+```{r}
+# Summary Statistics
+
+summary(unemployment_rate$unemp_rate)
+
+```
+The Summary statistics of the unemployment rate data shows a slight variation in the min and max levels. There was a noticeable range in the data, with the unemployment rate ranging from 7.40% (min) to 13.60% (max). These numbers show how this age group's unemployment rate changed throughout the specified period of time.
+
+Distribution of the data could be found using histogram.
+
+```{r}
+hist(unemployment_rate$unemp_rate, breaks = 15, col = "lightblue", main = "Histogram of Unemployment rate of persons aged 15-24", xlab = "Unemployment Rate", ylab = "Frequency")
+
+```
+According to Figure 1, the histogram of the given data appears to be fairly normal, with a slight left skewness. This skewness might be attributed to a change point in the data, as shown in Figure 2.
+
+```{r}
+# Convert data into a time series object
+unemployment.ts <-  as.vector(unemployment_rate$unemp_rate) # Converting to a vector
+unemployment.ts <-  ts(unemployment.ts, start = c(2002,11), frequency = 12)
+class(unemployment.ts)
+
+```
+
+```{r}
+# Plot with time series plot with mean line
+plot(unemployment.ts,ylab='Unemployment Rate',xlab='Year',type='o', main = "Unemployment rate of people aged 15-24")
+mean_unemployment <- round(mean(unemployment.ts),6)
+abline(h = mean_unemployment, col = "red", lty = 2) 
+text(x = max(time(unemployment.ts)), y = mean_unemployment, labels = paste("Mean:", mean_unemployment), pos = 3, col = "red")
+
+```
+Time Series Plot Characteristics (Figure 2):
+1. **Trend**: The time series plot reveals a clear trend. Initially, there is a decreasing trend, followed by a recovery that stabilizes over time.
+2. **Seasonality**: Based on visual interpretation, there is a clear indication of seasonality in the data. 
+3. **Changing Variance**: There is slight changing variance.
+4. **Behavior**: The plot predominantly demonstrates moving average (MA) behavior, with a few auto regressive (AR) points in it.
+5. **Intervention/ Change Point**: There is noticeable increase in the unemployment rate observed after mid-2008 could be attributed to significant economic events such as the "Labour Market Downturn" in Australia [2] and the global impact of the Great Recession on the international and Australian economy [3]. These events likely serve as key reasons for the change point in our data during that period.
+6. **Auto Correlation**:  The scatter plot of Scatter plot of Unemployment rate to its first lag as shown in Figure 3 indicates strong 
+positive auto correlation between observation of successive seasons.
+
+```{r}
+# First Lag Correlation
+y = unemployment.ts            
+x = zlag(unemployment.ts)        
+# Plot for First Lag
+plot(y=unemployment.ts,x=zlag(unemployment.ts),ylab='Unemployment Rate', xlab='Previous Observation Unemployment Rate' , main = "Scatter plot of Unemployment rate of people aged 15-24")
+
+```
+## Check for Seasonality
+
+Visually identifying seasonal patterns in the time series plot can be further validated using autocorrelation function (ACF) and partial autocorrelation function (PACF) plots.
+
+
+We will utilize custom functions that we have created and provided in the course to enhance code readability. Please refer to the "Appendix - Useful User-defined Functions" for details.```{r}
+
+
+```{r}
+# ACF and PACF
+plot_acf_pacf(unemployment.ts) # clear seasonality
+```
+ACF and PACF plots in Figure 4 show a clear wave pattern, indicating seasonality. Additionally, the decay in the seasonal lags suggests a trend in the data, highlighting its non-stationarity.
+
+## Test for Normality
+
+```{r}
+
+qq_shapiro_function(unemployment.ts) # custom function
+
+```
+In the Q-Q plot (Figure 5), the data point are mostly aligning with the center line (expect for the both ends) which suggest the data is following normal distribution.
+
+- **Null Hypothesis (H0)**: \( \rho \geq 0.05 \) (Distribution of the series is normal)
+- **Alternative Hypothesis (H1)**: \( \rho < 0.05 \) (Distribution of the series is not normal
+
+With a p-value of 0.4098 from the Shapiro-Wilk test at the 0.05 significance level, we do not have sufficient evidence to reject the null hypothesis. Therefore, based on this test, the data is likely normally distributed.
+
+
+## Test for Stationarity
+
+ADF, PP, and KPSS tests are can used to determine whether a time series is stationary or not.
+
+```{r}
+ts_stationary_tests(unemployment.ts)
+
+```
+Even though the KPSS test suggests otherwise, the high p-values from the ADF and PP tests indicate that our data is non-stationary. Considering our data exhibits seasonality, we can rely on the ADF and PP tests along with the time series plot to confirm its non-stationarity.
+
+
+Given our understanding that the data is non-stationary, seasonal, and exhibits a change point, we will develop SARIMA-based models to capture these characteristics. We will refine and improve these models to assess their fit, and select the best model for forecasting. If the results show unsatisfactory large confidence intervals due to the change point, we will consider splitting the data and re-fitting the models accordingly.
+
+
+# Model Specifications
+
+## Finding Seasonal Components (P, D, Q)
+
+To begin, we will explore seasonal components (P, D, Q) and seek optimal values that can effectively capture both seasonal patterns and trends. If significant variance remains, we will apply appropriate transformation techniques as necessary.
+
+```{r}
+# First Differencing (D=1)
+
+m1.unemployment = Arima(unemployment.ts,order=c(0,0,0),seasonal=list(order=c(0,1,0), period=12))
+res.m1 = residuals(m1.unemployment);  
+plot_residuals_acf_pacf(res.m1,"(0,0,0),(0,1,0)")
+
+```
+
+Seasonal differencing successfully removed the trend. Based on Figure 6, where the ACF shows a decaying pattern, we can set Q = 0 . Similarly, from the PACF plot which indicates a lag at season = 1, we can set  P = 1.
+
+
+```{r}
+#So, we will add the SARMA(1,1,0) component and see if we get rid of seasonal component.
+m2.unemployment = Arima(unemployment.ts,order=c(0,0,0),seasonal=list(order=c(1,1,0), period=12))
+res.m2 = residuals(m2.unemployment);  
+plot_residuals_acf_pacf(res.m2, "(0,0,0),(1,1,0)")
+```
+No significant improvement was noted. The PACF reveals a seasonal lag at season = 1, potentially attributable to a change point. To not lose further observations and acknowledging the presence of residual white noise, we will proceed with this seasonal component and conduct further analysis on seasonality in the residual analysis section.
+
+## Finding ARIMA Components (p,d,q)
+
+
+To address change in variance, we can employ transformation techniques before determining ARIMA components to see any potential improvements.
+
+### Box-Cox Transformation
+
+```{r}
+# Box-cox transformation
+BC <- BoxCox.ar(unemployment.ts) 
+BC$ci
+lambda <- BC$lambda[which(max(BC$loglike) == BC$loglike)]
+lambda 
+```
+
+
+The obtained lambda value of 1.5 suggests that a Box-Cox transformation could be suitable
+
+```{r}
+BC.unemployment.ts = (unemployment.ts^lambda-1)/lambda
+
+m3.unemployment = Arima(BC.unemployment.ts,order=c(0,0,0),seasonal=list(order=c(1,1,0), period=12))
+res.m3 = residuals(m3.unemployment);
+plot_residuals_acf_pacf(res.m3,"BC (0,0,0),(1,1,0)")
+
+```
+
+<!-- The Box-Cox transformation did not significantly improve our data in terms of reducing variance; in fact, it appeared to increase it. Since our data is already normal, this transformation did not provide any meaningful improvements. Thus Raw data will be continued to be used for further model specification. -->
+
+
+Now, we still observe a decaying pattern in our ACF plot. To capture any remaining non-seasonal trends, we will apply ordinary differencing (d). 
+This is also evident from the p-values of the tests below: ADF test has a p-value greater than 0.1, while KPSS test has a p-value less than 0.1
+
+
+```{r}
+# Stationarity test
+ts_stationary_tests(res.m3)
+```
+```{r}
+# Now setting up the ARIMA Component with First Differencing (d=1)
+
+m4.unemployment = Arima(BC.unemployment.ts,order=c(0,1,0),seasonal=list(order=c(1,1,0), period=12))
+res.m4 = residuals(m4.unemployment);  
+plot_residuals_acf_pacf(res.m4,"(0,1,0),(1,1,0)")
+```
+Differencing successfully removed the decaying pattern in the ACF plot. Based on the obtained ACF and PACF plots in Figure 10, we can set p = 2 (PACF) and q = 3 (ACF).
+```{r}
+m5.unemployment = Arima(BC.unemployment.ts,order=c(2,1,3),seasonal=list(order=c(1,1,0), period=12))
+res.m5 = residuals(m5.unemployment);  
+plot_residuals_acf_pacf(res.m5,"asda")
+```
+
+There is still a slight seasonal lag, which could be due to a change point or simply white noise. Therefore, we will proceed with fitting this model and conduct further diagnostic checks to determine its adequacy.
+
+### EACF
+
+EACF is used to find more tentative models
+
+```{r}
+eacf(res.m4) #residuals of m4 is being used for EACF since there is leftover signal in them.
+```
+Based on the results of EACF and considering the topmost left zeros, the selected models are SARIMA(0,1,1)x(1,1,0)_12,SARIMA(0,1,2)x(1,1,0)_12,SARIMA(1,1,1)x(1,1,0)_12 and SARIMA(1,1,2)x(1,1,0)_12
+
+### BIC Table
+
+BIC table can be used to further expand the set of possible models
+
+```{r, warning=FALSE}
+
+# BIC table
+bic_table = armasubsets(y=res.m4,nar=5,nma=5,y.name='p',ar.method='ols')
+plot(bic_table)
+```
+According to BIC table (Figure #), feasible models are SARIMA(1,1,0)x(1,1,1)_12 and SARIMA(1,1,3)x(1,1,1)_12
+
+
+Based on all the analyses conducted, the potential models are: 
+
+ - SARIMA(0,1,1)x(1,1,0)_12
+ - SARIMA(0,1,2)x(1,1,0)_12
+ - SARIMA(1,1,1)x(1,1,0)_12  
+ - SARIMA(1,1,2)x(1,1,0)_12
+ - SARIMA(2,1,3)x(1,1,0)_12
+ - SARIMA(1,1,0)x(1,1,1)_12
+ - SARIMA(1,1,3)x(1,1,1)_12
+ 
+ 
+# Model Fitting and Diagoniostics Checking
+
+```{r}
+
+# SARIMA(0,1,1)x(1,1,0)_12
+m5_011.unemployment = Arima(BC.unemployment.ts,order=c(0,1,1),seasonal=list(order=c(1,1,0), period=12),method = "ML")
+coeftest(m5_011.unemployment)
+residual.analysis(model = m5_011.unemployment)
+
+
+
+m5_011.unemploymentCSS = Arima(BC.unemployment.ts,order=c(0,1,1),seasonal=list(order=c(1,1,0), period=12),method = "CSS")
+coeftest(m5_011.unemploymentCSS)
+residual.analysis(model = m5_011.unemploymentCSS)
+
+```
+Both ML and CSS models perform well in capturing seasonality for SARIMA(0,1,1)x(1,1,0)_12, as evidenced by statistically significant p-values for both seasonal and MA components. Most of the residuals appear to be white noise. The histogram is symmetric in both cases, though there are deviations greater than ±3 and both tails are skewed, likely due to the change/intervention point in our data. The Shapiro-Wilk test yielded a p-value of 0.128 in ML and 0.007 in CSS, indicating insufficient evidence to reject the null hypothesis at an alpha (α) level of 0.05 in ML but not in CSS. This is further supported by the Q-Q plot of standardized residuals in both cases, where ML showing little deviation from the center line and CSS showing slight deviations. We observe only late auto correlations in the ACF plot, and the Ljung-Box test p-values suggest that most observed lags are not significant, at least until the first 25 lags (in both cases). Hence, SARIMA(0,1,1)x(1,1,0)_12 (especially ML) appears to be a suitable model for forecasting. We will further evaluate this based on additional evaluation metrics later.
+
+```{r}
+
+# SARIMA(0,1,2)x(1,1,0)_12
+m5_012.unemployment = Arima(BC.unemployment.ts,order=c(0,1,2),seasonal=list(order=c(1,1,0), period=12),method = "ML")
+coeftest(m5_012.unemployment)
+residual.analysis(model = m5_012.unemployment)
+
+m5_012.unemploymentCSS = Arima(BC.unemployment.ts,order=c(0,1,2),seasonal=list(order=c(1,1,0), period=12),method = "CSS")
+coeftest(m5_012.unemploymentCSS)
+residual.analysis(model = m5_012.unemploymentCSS)
+
+```
+Increasing the q value by 1 from the previous model made the histogram more symmetric, with the range within ±3. However, this adjustment might result in over fitting, as the coefficient for ma2 in both ML and CSS models is not statistically significant. Other results remain similar to those of the SARIMA(0,1,1)x(1,1,0)_12 model, with the ML model providing more normally distributed residuals compared to the CSS model. Additionally, the late auto correlations are not significantly different in either model.
+
+```{r}
+# SARIMA(1,1,1)x(1,1,0)_12  
+m5_111.unemployment = Arima(BC.unemployment.ts,order=c(1,1,1),seasonal=list(order=c(1,1,0), period=12),method = "ML")
+coeftest(m5_111.unemployment)
+res.m5 = residuals(m5_111.unemployment);  
+residual.analysis(model = m5_111.unemployment)
+
+m5_111.unemploymentCSS = Arima(BC.unemployment.ts,order=c(1,1,1),seasonal=list(order=c(1,1,0), period=12),method = "CSS")
+coeftest(m5_111.unemploymentCSS)
+res.m5 = residuals(m5_111.unemploymentCSS);  
+residual.analysis(model = m5_111.unemploymentCSS)
+
+```
+For the SARIMA(1,1,1)x(1,1,0)_12 model, both ML and CSS methods do not show significant ARIMA components due to insignificant coefficient values. Compared to CSS, the ML model provides more normalized residuals and histograms with non-extreme, symmetric values. As with previous models, we observe only late lags in the ACF, and the Ljung-Box test indicates that the observed auto correlations are not significant.
+
+
+```{r}
+# SARIMA(1,1,2)x(1,1,0)_12
+m5_112.unemployment = Arima(BC.unemployment.ts,order=c(1,1,2),seasonal=list(order=c(1,1,0), period=12),method = "ML")
+coeftest(m5_112.unemployment)
+res.m5 = residuals(m5_112.unemployment);  
+residual.analysis(model = m5_112.unemployment)
+
+m5_112.unemploymentCSS = Arima(BC.unemployment.ts,order=c(1,1,2),seasonal=list(order=c(1,1,0), period=12),method = "CSS")
+coeftest(m5_112.unemploymentCSS)
+res.m5 = residuals(m5_112.unemploymentCSS);  
+residual.analysis(model = m5_112.unemploymentCSS)
+
+```
+Similarly, none of the ARIMA coefficients are significant in this model. This suggests that these model variants may not be suitable for our data.
+
+```{r}
+# SARIMA(2,1,3)x(1,1,0)_12
+m5_213.unemployment = Arima(BC.unemployment.ts,order=c(2,1,3),seasonal=list(order=c(1,1,0), period=12),method = "ML")
+coeftest(m5_213.unemployment)
+residual.analysis(model = m5_213.unemployment)
+
+m5_213.unemploymentCSS = Arima(BC.unemployment.ts,order=c(2,1,3),seasonal=list(order=c(1,1,0), period=12),method = "CSS")
+coeftest(m5_213.unemploymentCSS)
+residual.analysis(model = m5_213.unemploymentCSS)
+
+```
+For the SARIMA(2,1,3)x(1,1,0)_12 model, which was selected through visual inspection of ACF and PACF lags prior to using BIC and EACF, the ML model provides more statistically significant, normally distributed residuals. The Q-Q plot shows that the distribution of residuals in the ML model aligns better compared to its CSS counterpart. This ML model produces better white noise in the residuals than any other models we have developed so far. Additionally, the histogram is more symmetrical and the range is within ±3, although there is an outlier in the left tail, likely due to a change point in the series.
+
+Except for season 1, there are no significant auto correlations left in the ACF plot, and even the first season lag is not significant, as all p-values in the Ljung-Box test are greater than the significance level. Therefore, this model shows potential to be a good fit for forecasting.
+
+```{r}
+
+# SARIMA(1,1,3)x(1,1,0)_12
+m5_113.unemployment = Arima(BC.unemployment.ts,order=c(1,1,3),seasonal=list(order=c(1,1,0), period=12),method = "ML")
+coeftest(m5_113.unemployment)
+residual.analysis(model = m5_113.unemployment)
+
+m5_113.unemploymentCSS = Arima(BC.unemployment.ts,order=c(1,1,3),seasonal=list(order=c(1,1,0), period=12),method = "CSS")
+coeftest(m5_113.unemploymentCSS)
+residual.analysis(model = m5_113.unemploymentCSS)
+
+```
+
+Reducing the p-value by 1 affected the ML model, rendering MA coefficients ma2 and ma3 insignificant. NaN values appeared in the CSS method, possibly due to values like zero or less than zero. Therefore, since CSS-ML checking would only yield the ML result without CSS, this step was omitted. SARIMA(1,1,3)x(1,1,0)_12 model may not be suitable for our data.
+
+
+```{r}
+# SARIMA(1,1,0)x(1,1,0)_12
+m5_110.unemployment = Arima(BC.unemployment.ts,order=c(1,1,0),seasonal=list(order=c(1,1,0), period=12),method = "ML")
+coeftest(m5_110.unemployment)
+residual.analysis(model = m5_110.unemployment)
+
+m5_110.unemploymentCSS = Arima(BC.unemployment.ts,order=c(1,1,0),seasonal=list(order=c(1,1,0), period=12),method = "CSS")
+coeftest(m5_110.unemploymentCSS)
+residual.analysis(model = m5_110.unemploymentCSS)
+
+```
+
+For SARIMA(1,1,0)x(1,1,0)_12, both ML and CSS methods yield significant coefficient values (below the 0.05 significance level). The ML model generates normally distributed residuals and a more symmetric histogram within a ±3 range. In CSS, there are no seasonal lags, while in ML, there is one seasonal lag present. Most of the non-late auto correlations in the ACF plot are not significant, as indicated by the results of the Ljung-Box test.
+
+# Model Evaluation
+
+## AIC and BIC Score
+
+
+```{r}
+# Sorting ml models using AIC
+
+sc.AIC = AIC(m5_011.unemployment, m5_012.unemployment, m5_111.unemployment, m5_112.unemployment, 
+             m5_213.unemployment, m5_113.unemployment,m5_110.unemployment)
+
+sort.score(sc.AIC, score = "aic")
+
+# Sorting ml model using BIC
+
+sc.BIC = BIC(m5_011.unemployment, m5_012.unemployment, m5_111.unemployment, m5_112.unemployment, 
+             m5_213.unemployment, m5_113.unemployment,m5_110.unemployment)
+
+sort.score(sc.BIC, score = "bic")
+
+```
+
+The AIC scores are very close for the top 3 models, differing by decimal points. Based on both AIC and BIC scores, m5_110.unemployment emerged as the top model.
+
+## Evaluation Metrices
+
+```{r}
+
+# calculating different evaluation metrics for all models
+
+Sm5_011.unemployment <- accuracy(m5_011.unemployment)[1:7]
+Sm5_012.unemployment <- accuracy(m5_012.unemployment)[1:7]
+Sm5_111.unemployment <- accuracy(m5_111.unemployment)[1:7]
+Sm5_112.unemployment <- accuracy(m5_112.unemployment)[1:7]
+Sm5_213.unemployment <- accuracy(m5_213.unemployment)[1:7]
+Sm5_113.unemployment <- accuracy(m5_113.unemployment)[1:7]
+Sm5_110.unemployment <- accuracy(m5_110.unemployment)[1:7]
+
+df.Smodels <- data.frame(
+  rbind(Sm5_011.unemployment, Sm5_012.unemployment, Sm5_111.unemployment, Sm5_112.unemployment, 
+        Sm5_213.unemployment, Sm5_113.unemployment, Sm5_110.unemployment)
+)
+colnames(df.Smodels) <- c("ME", "RMSE", "MAE", "MPE", "MAPE", 
+                          "MASE", "ACF1")
+rownames(df.Smodels) <- c("SARIMA(0,1,1)x(1,1,0)_12", "SARIMA(0,1,2)x(1,1,0)_12", "SARIMA(1,1,1)x(1,1,0)_12", 
+                          "SARIMA(1,1,2)x(1,1,0)_12", "SARIMA(2,1,3)x(2,1,0)_12", "SARIMA(1,1,3)x(1,1,0)_12",
+                          "SARIMA(1,1,0)x(1,1,0)_12")
+round(df.Smodels,  digits = 3)
+
+```
+
+Considering overall metrics, SARIMA(2,1,3)x(2,1,0)_12 consistently scores the best (lowest values) across most metrics. It exhibits the lowest RMSE, MAE, MAPE, and MASE scores, while its ME is comparable with a few other models. Therefore, based on the majority of evaluation metrics, SARIMA(2,1,3)x(2,1,0)_12 is considered the best model.
+
+So, we have narrowed down our potential models to m5_110.unemployment and Sm5_213.unemployment. Despite their similar AIC scores, Sm5_213.unemployment exhibits better overall evaluation metric scores and significantly higher coefficient values for all parameters. Therefore, we will select Sm5_213.unemployment as our preferred model in this model.
+
+## Over-parameterized model
+
+For Sm5_213.unemployment over-parameterized models include SARIMA(2,1,4)x(1,1,0)_12 and SARIMA(3,1,3)x(1,1,0)_12
+
+```{r}
+# SARIMA(2,1,4)x(2,1,0)
+m5_214.unemployment = Arima(BC.unemployment.ts,order=c(2,1,4),seasonal=list(order=c(1,1,0), period=12),method = "ML")
+coeftest(m5_214.unemployment)
+residual.analysis(model = m5_214.unemployment)
+```
+The residuals show no remaining seasonality, with a symmetric histogram (aside from one outlier) within a ±3 range, and they appear to follow a normal distribution according to both the Shapiro-Wilk normality test and the Q-Q plot. Additionally, there is no autocorrelation observed in the ACF plot, and the Ljung-Box test shows no significant lags. However, increasing the q value by 1 resulted in insignificant coefficients such as ar1, ma3, and ma4. This over-parametrization suggests over fitting of the model.
+
+```{r}
+# SARIMA(3,1,3)x(2,1,0)
+m5_313.unemployment = Arima(BC.unemployment.ts,order=c(3,1,3),seasonal=list(order=c(1,1,0), period=12))
+coeftest(m5_313.unemployment)
+residual.analysis(model = m5_313.unemployment)
+```
+
+The residuals show no remaining seasonality, with a symmetric histogram (aside from one outlier) within a ±3 range, and they appear to follow a normal distribution according to both the Shapiro-Wilk normality test and the Q-Q plot. Additionally, there is no autocorrelation observed in the ACF plot, and the Ljung-Box test shows no significant lags. However, increasing the p value by 1 resulted in insignificant coefficients such as ar1, ar3, ma 1 and ma4. This over-parametrization suggests over fitting of the model.
+
+# Forecast
+
+
+Since over-parameterized models did not improve the results, the Sm5_213.unemployment model is selected to forecast the next 10 observations of the data.
+
+```{r, warning=FALSE}
+# Forecasting
+m5_213.unemployment.forecast = Arima(unemployment.ts,order=c(2,1,3),seasonal=list(order=c(1,1,0), period=12), 
+                         lambda = 1.5, method = "CSS") # raw series, CSS was better for m5_213.unemployment.forecast (check co-efficient values)
+
+forecast_data = forecast(m5_213.unemployment.forecast, h = 12) # next 10 observations
+plot(forecast_data, xlab = "Year",ylab = "Unemployment Rate", main = "10 Month Forecast for Unemployment rate of persons aged 15-24 using
+     SARIMA(2,1,3)(1,1,0)_12")
+
+```
+
+Figure (insert number) depicts the 10-month forecast for the original data, with the forecasted values shown in a blue line and 80% and 95% confidence intervals. The fitting appears satisfactory, with the change point slightly influencing the confidence intervals but not significantly. To further assess this, the data will be split at the change point, and a new model will be fitted to investigate potential improvements.
+
+# Unemployment Rate of persons aged 15-24 from 2009 to 2011.
+
+Given the nature of our data, which revolves around the job market and unemployment rates, it is assumed that the current trend depends more on recent years rather than historical records spanning a decade. The job market evolves constantly and undergoes changes with each generation. Therefore, even though we lose a significant portion of the data by splitting it at the change point, it is expected that this will not significantly affect the accuracy of the next 10-month forecast.
+
+
+# Splitting the data
+
+We have split the unemployment time series data starting from the change point in November 2008, which corresponds to indices 75 to 109. 
+```{r}
+unemployment.ts.p2 =  ts(unemployment.ts[73:109],start=c(2008,11), frequency=12)
+unemployment.ts.p2
+```
+
+```{r}
+# Plotting the time series plot after the split
+plot(unemployment.ts.p2,ylab='Unemployment Rate',xlab='Year',type='o', main = "Time series plot of Unemployment rate of persons aged 15-24 (After Split)")
+```
+
+#Characterstics after Split
+
+Time Series Plot Characteristics (Figure 2):
+1. **Trend**: The time series plot reveals a clear trend. Initially, there is a decreasing trend, followed by a recovery that stabilizes over time.
+2. **Seasonality**: Based on visual interpretation, there is a clear indication of seasonality in the data. 
+3. **Changing Variance**: There is slight changing variance.
+4. **Behavior**: The plot predominantly demonstrates moving average (MA) behavior, with a few auto regressive (AR) points in it.
+5. **Intervention/ Change Point**: There is noticeable increase in the unemployment rate observed after mid-2008 could be attributed to significant economic events such as the "Labour Market Downturn" in Australia [2] and the global impact of the Great Recession on the international and Australian economy [3]. These events likely serve as key reasons for the change point in our data during that period.
+6. **Auto Correlation**:  The scatter plot of Scatter plot of Unemployment rate to its first lag as shown in Figure 3 indicates strong 
+positive auto correlation between observation of successive seasons.
+
+
+## Check for Seasonality
+```{r}
+plot_acf_pacf(unemployment.ts.p2)
+```
+From this, we can confirm that the plot exhibits seasonality, as evidenced by the clear patterns in the ACF plot. Additionally, the decaying pattern suggests that the data might be non-stationary.
+
+## Test for Stationarity
+```{r}
+ts_stationary_tests(unemployment.ts.p2)
+```
+The decaying pattern, along with the ADF and PP test p-values being greater than 0.05, suggests that the data might be non-stationary. Although the KPSS test indicates potential stationarity, the overall evidence points towards non-stationarity.
+
+
+
+Similar to what we did in the first half of the report, we will follow the same procedure and apply the SARIMA model to account for the seasonality in the data and also handle the non - stationarity in the the data on the way.
+
+
+
+# Model Specifications
+
+## Finding Seasonal Components (P, D, Q)
+
+We will be setting up the seasonal components (P, D, Q) for our SARIMA model by fitting a model with initial seasonal difference and examining their ACF and PACF plots of the residuals.
+```{r}
+# Start with the first seasonal difference
+m1.unemployment.p2 = Arima(unemployment.ts.p2,order=c(0,0,0), seasonal=list(order=c(0,1,0), period=12))
+res.m1.p2 = residuals(m1.unemployment.p2);  
+plot_residuals_acf_pacf(res.m1.p2, "(0,0,0),(0,1,0)")
+```
+
+
+
+The ACF and PACF plots of the residuals indicate that there are no significant lags, suggesting that the values of P and Q in the SARIMA model may be 0. Furthermore, after applying the seasonal difference to the data, the seasonality in the residual plot has been removed, indicating it was successful in addressing the seasonal component of the data.
+
+Now, we proceed with setting up the ARIMA component of the SARIMA model.
+
+To stabilize the variance in the data before configuring the ARIMA component, we will use a Box-Cox transformation. This
+
+
+
+## Finding ARIMA Components (p,d,q)
+
+To stabilize the variance in the data before configuring the ARIMA component, we will use a Box-Cox transformation. 
+
+### Box-Cox Transformation
+
+
+```{r}
+BC <- BoxCox.ar(unemployment.ts.p2) 
+BC$ci
+lambda <- BC$lambda[which(max(BC$loglike) == BC$loglike)]
+lambda 
+BC.unemployment.ts.p2 = (unemployment.ts^lambda-1)/lambda
+```
+
+We applied a Box-Cox transformation with a lambda value of 1.3. This transformation makes the data more consistent and better suited for ARIMA modeling.
+
+To remove the non-stationarity from the series, we are applying an ordinary differencing with d = 1. This step helps to make the time series data stationary by removing trends and other non-stationary components.
+
+```{r}
+m2.unemployment.p2 = Arima(BC.unemployment.ts.p2,order=c(0,1,0),
+                   seasonal=list(order=c(0,1,0), period=12))
+res.m2.p2 = residuals(m2.unemployment.p2);  
+plot_residuals_acf_pacf(res.m2.p2, "(0,1,0),(0,1,0)")
+```
+After applying differencing, the residual plot indicates that the trend has been removed.
+Additionally, we observe two significant lags in both the ACF and PACF plots.
+We will use these values for p and q to determine the optimal ARIMA parameters.(p =2 and q =2)
+
+```{r}
+m3.unemployment.p2 = Arima(BC.unemployment.ts.p2,order=c(2,1,2),
+                   seasonal=list(order=c(0,1,0), period=12))
+res.m3.p2 = residuals(m3.unemployment.p2);  
+plot_residuals_acf_pacf(res.m3.p2, "(2,1,2,(0,1,0)")
+```
+
+
+As we can see, there is still one significant lag in the ACF and PACF plots.Therefore, we will overparameterize the p and q values to check if it helps improve the model.
+
+We will first try improving the model by increasing the p value by 1 and observe its impact.
+
+```{r}
+m4.unemployment.p2 = Arima(BC.unemployment.ts.p2,order=c(3,1,2),
+                           seasonal=list(order=c(0,1,0), period=12))
+res.m4.p2= residuals(m4.unemployment.p2);  
+plot_residuals_acf_pacf(res.m4.p2, "(3,1,2),(0,1,0)")
+```
+
+With this adjustment, the significant lag has been removed, indicating that the overparameterized model is a better fit than the previous one. Therefore, we will use this model for fitting i.e 
+SARIMA(3,1,2)x(0,1,0)_12.
+
+
+```{r}
+ts_stationary_tests(res.m4.p2)
+```
+The Dickey-Fuller test yielded a statistically significant p-value of 0.01, supporting stationarity. Similarly, the Phillips-Perron test and KPSS test also confirmed the data's stationarity with p-values of 0.01 and 0.1, respectively.
+
+### EACF
+
+```{r}
+eacf(res.m2.p2)
+```
+
+Using EACF, we the optimal models are
+SARIMA(1,1,1)x(0,1,0)_12, SARIMA(0,1,1)x(0,1,0)_12, SARIMA(0,1,2)x(0,1,0)_12 and  SARIMA(1,1,2)x(0,1,0)_12
+
+### BIC Table
+
+```{r}
+par(mfrow=c(1,1))
+bic_table = armasubsets(y=res.m2,nar=5,nma=5,y.name='p',ar.method='ols')
+plot(bic_table)
+```
+The possible models that get using BIC table are
+SARIMA(1,1,2)x(0,1,0)_12, SARIMA(3,1,2)x(0,1,0)_12, SARIMA(1,1,0)x(0,1,0)_12 and SARIMA(3,1,0)x(0,1,0)_12
+
+
+
+### Potential Models
+Below are the potential models that we find after analysis
+SARIMA(1,1,2)x(0,1,0)_12
+SARIMA(3,1,2)x(0,1,0)_12
+SARIMA(1,1,0)x(0,1,0)_12
+SARIMA(3,1,0)x(0,1,0)_12
+SARIMA(1,1,1)x(0,1,0)_12
+SARIMA(0,1,1)x(0,1,0)_12
+SARIMA(0,1,2)x(0,1,0)_12
+
+
+
+# Model Fitting and Diagoniostics Checking
+
+# SARIMA(3,1,2)x(0,1,0)_12
+```{r}
+m2_312.unemployment = Arima(unemployment.ts.p2,order=c(3,1,2),seasonal=list(order=c(0,1,0), period=12),method = "ML")
+coeftest(m2_312.unemployment)
+residual.analysis(model = m2_312.unemployment)
+
+m2_312.unemploymentCSS = Arima(unemployment.ts.p2,order=c(3,1,2),seasonal=list(order=c(0,1,0), period=12),method = "CSS")
+coeftest(m2_312.unemploymentCSS)
+residual.analysis(model = m2_312.unemploymentCSS)
+```
+In the ML model, ar1, ar2 and ma1,ma2 are highly significant while ar3 is  not significant. The CSS output indicates that ar2, ar3  and  ma1 , ma2 are significant. ar1 is not statistically significant.
+Both ML and CSS model seems to be a good fit for the model.The Shapiro-Wilk normality test indicates a departure from normality in the residuals, with a low p-value of 0.0001136, suggesting non-normality. The same can be confirmed from  QQ Plot and histogram.
+
+
+# SARIMA(1,1,0)x(0,1,0)_12
+```{r}
+m2_110.unemployment = Arima(unemployment.ts.p2,order=c(1,1,0),seasonal=list(order=c(0,1,0), period=12),method = "ML")
+coeftest(m2_110.unemployment)
+residual.analysis(model = m2_110.unemployment)
+
+m2_110.unemploymentCSS = Arima(unemployment.ts.p2,order=c(1,1,0),seasonal=list(order=c(0,1,0), period=12),method = "CSS")
+coeftest(m2_110.unemploymentCSS)
+residual.analysis(model = m2_110.unemploymentCSS)
+```
+The z test of coefficients shows that the AR(1) coefficient is significant at the 0.05 level in both models. However, the Shapiro-Wilk normality test indicates non-normality in the residuals for both models, with p-values of 0.006752 and 0.001492, respectively. This looks to be a good model.
+
+
+# SARIMA(3,1,0)x(0,1,0)_12
+```{r}
+m2_310.unemployment = Arima(unemployment.ts.p2,order=c(3,1,0),seasonal=list(order=c(0,1,0), period=12),method = "ML")
+coeftest(m2_310.unemployment)
+residual.analysis(model = m2_310.unemployment)
+
+m2_310.unemploymentCSS = Arima(unemployment.ts.p2,order=c(3,1,0),seasonal=list(order=c(0,1,0), period=12),method = "CSS")
+coeftest(m2_310.unemploymentCSS)
+residual.analysis(model = m2_310.unemploymentCSS)
+```
+The z test results indicate that in both models, AR(1) is significant at the 0.05 level, while AR(2) is marginally significant at the 0.1 level. The Shapiro-Wilk normality test suggests non-normality in the residuals for both models, with very low p-values.
+
+
+# SARIMA(1,1,1)x(0,1,0)_12
+```{r}
+m2_111.unemployment = Arima(unemployment.ts.p2,order=c(1,1,1),seasonal=list(order=c(0,1,0), period=12),method = "ML")
+coeftest(m2_111.unemployment)
+residual.analysis(model = m2_111.unemployment)
+
+m2_111.unemploymentCSS = Arima(unemployment.ts.p2,order=c(1,1,1),seasonal=list(order=c(0,1,0), period=12),method = "CSS")
+coeftest(m2_111.unemploymentCSS)
+residual.analysis(model = m2_111.unemploymentCSS)
+
+
+m2_111.unemploymentCSSML = Arima(unemployment.ts.p2,order=c(1,1,1),seasonal=list(order=c(0,1,0), period=12),method = "CSS-ML")
+coeftest(m2_111.unemploymentCSSML)
+residual.analysis(model = m2_111.unemploymentCSSML)
+```
+In all three models, MA(1) is highly significant with p-values well below 0.05, indicating a strong impact on the dependent variable. The Shapiro-Wilk normality test suggests that the residuals are not normally distributed, with p-values less than 0.05, indicating departures from normality.
+
+
+
+# SARIMA(0,1,1)x(0,1,0)_12
+```{r}
+m2_011.unemployment = Arima(unemployment.ts.p2,order=c(0,1,1),seasonal=list(order=c(0,1,0), period=12),method = "ML")
+coeftest(m2_011.unemployment)
+residual.analysis(model = m2_011.unemployment)
+
+m2_011.unemploymentCSS = Arima(unemployment.ts.p2,order=c(0,1,1),seasonal=list(order=c(0,1,0), period=12),method = "CSS")
+coeftest(m2_011.unemploymentCSS)
+residual.analysis(model = m2_011.unemploymentCSS)
+```
+
+In both models, MA(1) is significant, with p-values below 0.05, indicating its impact on the dependent variable. The Shapiro-Wilk normality test suggests that the residuals are not normally distributed, with p-values less than 0.05, indicating departures from normality.
+
+
+
+# SARIMA(0,1,2)x(0,1,0)_12
+```{r}
+m2_012.unemployment = Arima(unemployment.ts.p2,order=c(0,1,2),seasonal=list(order=c(0,1,0), period=12),method = "ML")
+coeftest(m2_012.unemployment)
+residual.analysis(model = m2_012.unemployment)
+
+m2_012.unemploymentCSS = Arima(unemployment.ts.p2,order=c(0,1,2),seasonal=list(order=c(0,1,0), period=12),method = "CSS")
+coeftest(m2_012.unemploymentCSS)
+residual.analysis(model = m2_012.unemploymentCSS)
+```
+In the ML model, MA(1) is significant (p < 0.05), indicating its influence on the outcome. However, MA(2) is not significant (p > 0.05). The Shapiro-Wilk normality test reveals departures from normality in the residuals (p < 0.05), indicating a potential issue with the model's assumptions.
+
+In the CSS model, MA(1) remains significant (p < 0.01), suggesting its continued impact. MA(2) is not significant (p > 0.05). The Shapiro-Wilk normality test also indicates deviations from normality (p < 0.05), highlighting potential shortcomings in the model's assumptions.
+
+# SARIMA(1,1,2)x(0,1,0)_12
+```{r}
+m2_112.unemployment = Arima(unemployment.ts.p2,order=c(1,1,2),seasonal=list(order=c(0,1,0), period=12),method = "ML")
+coeftest(m2_112.unemployment)
+residual.analysis(model = m2_112.unemployment)
+
+m2_112.unemploymentCSS = Arima(unemployment.ts.p2,order=c(1,1,2),seasonal=list(order=c(0,1,0), period=12),method = "CSS")
+coeftest(m2_112.unemploymentCSS)
+residual.analysis(model = m2_112.unemploymentCSS)
+```
+In the ML model, none of the coefficients (ar1, ma1, ma2) are statistically significant (all p-values > 0.05), indicating their limited impact on the model.
+
+In the CSS model, ar1, ma1, and ma2 are all highly significant (p < 0.001), suggesting their strong influence on the outcome. However, the Shapiro-Wilk normality test indicates deviations from normality in the residuals (p < 0.05), indicating potential issues with the model's assumptions.
+
+
+Below models look to be the best suitable models.
+
+# SARIMA(0,1,1)x(0,1,0)_12
+# SARIMA(0,1,2)x(0,1,0)_12
+# SARIMA(3,1,2)x(0,1,0)_12
+
+# Model Evaluation
+
+## AIC and BIC Score
+
+```{r}
+
+# Sorting ml models using AIC
+
+sc.AIC=AIC(m2_312.unemployment, m2_110.unemployment, 
+           m2_310.unemployment, m2_011.unemployment, m2_112.unemployment, m2_111.unemployment,m2_012.unemployment)
+           
+sort.score(sc.AIC, score = "aic")
+
+# Sorting ml model using BIC
+
+sc.BIC=BIC(m2_312.unemployment, m2_110.unemployment, 
+           m2_310.unemployment, m2_011.unemployment, m2_112.unemployment, m2_111.unemployment,m2_012.unemployment)
+
+sort.score(sc.BIC, score = "bic")
+```
+Comparing the AIC and BIC scores across the models, lower AIC values indicate better fitting models with parsimony, while lower BIC values emphasize model complexity and fit. In this case, models m2_011 and m2_110 show the best balance between goodness of fit and model complexity.
+
+
+
+```{r}
+Sm2_312.unemployment <- accuracy(m2_312.unemployment)[1:7]
+Sm2_110.unemployment <- accuracy(m2_110.unemployment)[1:7]
+Sm2_310.unemployment <- accuracy(m2_310.unemployment)[1:7]
+Sm2_011.unemployment <- accuracy(m2_011.unemployment)[1:7]
+Sm2_112.unemployment <- accuracy(m2_112.unemployment)[1:7]
+Sm2_111.unemployment <- accuracy(m2_111.unemployment)[1:7]
+Sm2_012.unemployment <- accuracy(m2_012.unemployment)[1:7]
+
+df.Smodels <- data.frame(
+  rbind(Sm2_312.unemployment, Sm2_110.unemployment, Sm2_310.unemployment,  
+        Sm2_011.unemployment, Sm2_112.unemployment, Sm2_111.unemployment, Sm2_012.unemployment)
+)
+colnames(df.Smodels) <- c("ME", "RMSE", "MAE", "MPE", "MAPE", 
+                          "MASE", "ACF1")
+rownames(df.Smodels) <- c("SARIMA(3,1,2)x(0,1,0)_12", "SARIMA(1,1,0)x(0,1,0)_12", "SARIMA(3,1,0)x(0,1,0)_12", "SARIMA(0,1,1)x(0,1,0)_12", "SARIMA(1,1,2)x(0,1,0)_12" , "SARIMA(1,1,1)x(0,1,0)_12", "SARIMA(0,1,2)x(0,1,0)_12")
+round(df.Smodels,  digits = 3)
+```
+
+These metrics assess different aspects of forecast accuracy. Lower values of RMSE, MAE, MAPE, and MASE indicate better model performance, while ACF1 close to zero indicates good model residuals. Models SARIMA(1,1,0) seem to perform relatively better across these metrics.
+
+## Over-parameterized model
+
+The overparameterized model for SARIMA(1,1,0)x(0,1,0)_12 will be SARIMA(1,1,1)x(0,1,0)_12 and SARIMA(2,1,0)x(0,1,0)_12.
+We have already explored the former model in our previous analysis. Thereofre, we will try fitting SARIMA(2,1,0)x(0,1,0)_12 and check its performance.
+
+# SARIMA(2,1,0)x(0,1,0)_12
+```{r}
+m2_210.unemployment = Arima(unemployment.ts.p2,order=c(2,1,0),seasonal=list(order=c(0,1,0), period=12),method = "ML")
+coeftest(m2_210.unemployment)
+residual.analysis(model = m2_210.unemployment)
+
+m2_210.unemploymentCSS = Arima(unemployment.ts.p2,order=c(2,1,0),seasonal=list(order=c(0,1,0), period=12),method = "CSS")
+coeftest(m2_210.unemploymentCSS)
+residual.analysis(model = m2_210.unemploymentCSS)
+```
+ Both ar1 and ar2 are significant at the 0.01 level, indicating their importance in the model.
+ 
+ 
+After evaluating various models, it's clear that the overparameterized model provides a more accurate fit to our data. Therefore, we will employ this model for our data forecasting as it captures the underlying patterns and dynamics more effectively.
+
+
+# Forecast
+
+
+```{r}
+m5.unemploy.p2 = Arima(unemployment.ts.p2,order=c(2,1,0),
+                   seasonal=list(order=c(0,1,0), period=12), 
+                   lambda = 1.3, method = "CSS")
+future = forecast(m5.unemploy.p2, h = 10)
+future
+plot(future)
+```
+# Comparing it with the forecasts of the full analysis 
+
+```{r}
+
+forecast_data
+plot(forecast_data)
+```
+The Point Forecast generally appears slightly lower across the months compared to the full data with the change point.
+The Lo 80 and Hi 80 values are narrower compared to the full data, indicating a more constrained 80% confidence interval.
+The Lo 95 and Hi 95 values are also narrower compared to the full data, indicating a more constrained 95% confidence interval.
+
+In terms of fit, the split data from the change point appears to provide a more precise and conservative forecast with tighter confidence intervals. This suggests a potentially better fit in capturing the underlying patterns and reducing uncertainty compared to the full data with the change point.
+
+# Conclusion
+
+need to write. Summarise what we did, how was fore case befor split and after split. 
+
+Conclusion
+In this report, we analyzed the unemployment rate of individuals aged 15-24 in Australia from 2009 to 2011. Our approach involved splitting the data at the change point in November 2008 to account for significant economic disruptions, including the Great Recession.
+
+Comparison of Forecasting Approaches
+Before Split:
+
+The initial analysis using the full dataset showed a trend with clear seasonality and a significant increase in unemployment rates post-2008, likely due to the global financial crisis. However, this approach lacked specificity in capturing the nuances of the post-crisis unemployment dynamics.
+After Split:
+
+By focusing on the period post-change point, we observed a more stable trend with noticeable seasonality. The seasonal differencing successfully addressed the seasonal components, and the Box-Cox transformation stabilized variance. The model fitting process involved iterating through various SARIMA configurations, ultimately identifying SARIMA(3,1,2)x(0,1,0)_12 and SARIMA(1,1,0)x(0,1,0)_12 as the most effective models, based on AIC, BIC, and residual analysis.
+Model Evaluation and Forecasting
+Selected Model: SARIMA(3,1,2)x(0,1,0)_12 demonstrated the best fit with significant seasonal and non-seasonal components. The forecast for the next 10 months shows slightly lower unemployment rates, with narrower confidence intervals, suggesting a more precise prediction compared to the full dataset analysis.
+Key Observations
+The split data provided a more accurate and conservative forecast, effectively capturing the underlying patterns and reducing uncertainty. This highlights the importance of considering structural breaks in time series data for improved forecasting accuracy.
+Future Work
+Further studies could explore more refined models or additional variables to enhance forecast precision. The methodology presented here serves as a robust framework for analyzing and forecasting unemployment trends in the context of economic shocks.
+
+
+
+
+
+
+# Appendix
+
+#Put the useful functions here
+
+# Reference
+
+[1]“Unemployment rate | Australian Bureau of Statistics,” www.abs.gov.au, Feb. 02, 2023. https://www.abs.gov.au/statistics/understanding-statistics/statistical-terms-and-concepts/time-series-data#Unemployment%20rate%20of%20persons%20aged%2015-24%20-%20Original (accessed Jun. 15, 2024).
+
+[2]Reserve Bank of Australia, “The Labour Market during the 2008–2009 Downturn | Bulletin – March Quarter 2010,” Reserve Bank of Australia, Sep. 11, 2018. https://www.rba.gov.au/publications/bulletin/2010/mar/1.html (accessed Jun. 16, 2024).
+
+[3]S. Kennedy, “Australia’s response to the global financial crisis ,” Treasury.gov.au, Jun. 24, 2009. https://treasury.gov.au/speech/australias-response-to-the-global-financial-crisis (accessed Jun. 16, 2024).
+
